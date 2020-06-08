@@ -22,12 +22,14 @@ executable AdministracionStock
       ModelStock
     , QueueData
     , Forms
+    , Layouts
   -- other-extensions:
   hs-source-dirs:      src
   default-language:    Haskell2010
   build-depends:
       base ^>=4.13.0.0
     , text
+    , microlens-platform
     , vector
     , gi-gtk
     , gi-gtk-declarative

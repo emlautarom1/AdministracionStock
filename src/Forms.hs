@@ -1,104 +1,127 @@
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE OverloadedLabels #-}
-{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TemplateHaskell #-}
 
-module Forms
-  ( Forms (..),
-    ItemForm (..),
-    ProveedorForm (..),
-    FormToObject (..),
-    simpleInputError,
-    emptyForms,
-    bajaProveedorID,
-    bajaItemID,
-  )
-where
+module Forms where
 
 import qualified Data.Text as Text
 import Data.Text (Text)
-import ModelStock
+import Lens.Micro.Platform
+import ModelStock (ItemStock (..), Proveedor (..))
 import Text.Read (readMaybe)
 
--- Forms
-
-data Forms = Forms
-  { itemForm :: ItemForm,
-    proveedorForm :: ProveedorForm,
-    formBajaProveedorID :: Text,
-    formBajaItemID :: Text
+data FormField src a v = FormField
+  { _label :: Text,
+    _value :: a,
+    _setter :: src -> a -> src
   }
-  deriving (Show)
 
-data ItemForm = ItemForm
-  { itemFormCodigo :: Text,
-    itemFormDescripcion :: Text,
-    itemFormMarca :: Text,
-    itemFormRubro :: Text,
-    itemFormCodigoProveedor :: Text,
-    itemFormUnidadMedidad :: Text,
-    itemFormCantidadExistente :: Text,
-    itemFormCantidadMinima :: Text,
-    itemFormCantidadMaxima :: Text,
-    itemFormPrecioCompra :: Text,
-    itemFormPorcentajeGanancia :: Text
-  }
-  deriving (Show)
+$(makeLenses ''FormField)
+
+class FieldToValue (f :: * -> * -> * -> *) a v where
+  fieldToValue :: f src a v -> Maybe v
+
+instance FieldToValue FormField Text String where
+  fieldToValue field = Just . Text.unpack $ field ^. value
+
+instance FieldToValue FormField Text Int where
+  fieldToValue field = readMaybe . Text.unpack $ field ^. value
+
+instance FieldToValue FormField Text Double where
+  fieldToValue field = readMaybe . Text.unpack $ field ^. value
+
+class FormToValue f v where
+  formToValue :: f -> Maybe v
+
+formFieldToTuple :: FormField src a v -> (Text, a, src -> a -> src)
+formFieldToTuple FormField {..} = (_label, _value, _setter)
 
 data ProveedorForm = ProveedorForm
-  { proveedorFormCodigo :: Text,
-    proveedorFormNombre :: Text,
-    proveedorFormDireccion :: Text,
-    proveedorFormTelefono :: Text
+  { _codigoPField :: FormField Forms Text Int,
+    _nombreField :: FormField Forms Text String,
+    _direccionField :: FormField Forms Text String,
+    _telefonoField :: FormField Forms Text String
   }
-  deriving (Show)
 
-class FormToObject f o where
-  formToObject :: f -> Maybe o
+data ItemStockForm = ItemStockForm
+  { _codigoIField :: FormField Forms Text Int,
+    _descripcionField :: FormField Forms Text String,
+    _marcaField :: FormField Forms Text String,
+    _rubroField :: FormField Forms Text String,
+    _codigoProveedorField :: FormField Forms Text Int,
+    _unidadMedidadField :: FormField Forms Text String,
+    _cantidadExistenteField :: FormField Forms Text Int,
+    _cantidadMinimaField :: FormField Forms Text Int,
+    _cantidadMaximaField :: FormField Forms Text Int,
+    _precioCompraField :: FormField Forms Text Double,
+    _porcentajeGananciaField :: FormField Forms Text Int
+  }
 
-instance FormToObject ItemForm ItemStock where
-  formToObject ItemForm {..} =
-    ItemStock
-      <$> (readMaybe . Text.unpack $ itemFormCodigo)
-        <*> (Just . Text.unpack $ itemFormDescripcion)
-        <*> (Just . Text.unpack $ itemFormMarca)
-        <*> (Just . Text.unpack $ itemFormRubro)
-        <*> (readMaybe . Text.unpack $ itemFormCodigoProveedor)
-        <*> (Just . Text.unpack $ itemFormUnidadMedidad)
-        <*> (readMaybe . Text.unpack $ itemFormCantidadExistente)
-        <*> (readMaybe . Text.unpack $ itemFormCantidadMinima)
-        <*> (readMaybe . Text.unpack $ itemFormCantidadMaxima)
-        <*> (readMaybe . Text.unpack $ itemFormPrecioCompra)
-        <*> (readMaybe . Text.unpack $itemFormPorcentajeGanancia)
+data Forms = Forms
+  { _itemForm :: ItemStockForm,
+    _proveedorForm :: ProveedorForm,
+    _eliminarItemID :: FormField Forms Text Int,
+    _eliminarProveedorID :: FormField Forms Text Int
+  }
 
-instance FormToObject ProveedorForm Proveedor where
-  formToObject ProveedorForm {..} =
+-- Magia!
+$(makeLenses ''ProveedorForm)
+$(makeLenses ''ItemStockForm)
+$(makeLenses ''Forms)
+
+instance FormToValue ProveedorForm Proveedor where
+  formToValue form =
     Proveedor
-      <$> (readMaybe . Text.unpack $ proveedorFormCodigo)
-      <*> (Just . Text.unpack $ proveedorFormNombre)
-      <*> (Just . Text.unpack $ proveedorFormDireccion)
-      <*> (Just . Text.unpack $ proveedorFormTelefono)
+      <$> fieldToValue (form ^. codigoPField)
+      <*> fieldToValue (form ^. nombreField)
+      <*> fieldToValue (form ^. direccionField)
+      <*> fieldToValue (form ^. telefonoField)
 
-bajaItemID :: Forms -> Maybe Int
-bajaItemID forms = readMaybe . Text.unpack $ formBajaItemID forms
+instance FormToValue ItemStockForm ItemStock where
+  formToValue form =
+    ItemStock
+      <$> fieldToValue (form ^. codigoIField)
+      <*> fieldToValue (form ^. descripcionField)
+      <*> fieldToValue (form ^. marcaField)
+      <*> fieldToValue (form ^. rubroField)
+      <*> fieldToValue (form ^. codigoProveedorField)
+      <*> fieldToValue (form ^. unidadMedidadField)
+      <*> fieldToValue (form ^. cantidadExistenteField)
+      <*> fieldToValue (form ^. cantidadMinimaField)
+      <*> fieldToValue (form ^. cantidadMaximaField)
+      <*> fieldToValue (form ^. precioCompraField)
+      <*> fieldToValue (form ^. porcentajeGananciaField)
 
-bajaProveedorID :: Forms -> Maybe Int
-bajaProveedorID forms = readMaybe . Text.unpack $ formBajaProveedorID forms
-
--- Forms utils
-
-simpleInputError :: IO (Maybe a)
-simpleInputError = do
-  putStrLn "Entrada inválida"
-  return Nothing
-
-emptyForms :: Forms
-emptyForms =
-  Forms
-    { itemForm = ItemForm "" "" "" "" "" "" "" "" "" "" "",
-      proveedorForm = ProveedorForm "" "" "" "",
-      formBajaItemID = "",
-      formBajaProveedorID = ""
-    }
+appForms :: Forms
+appForms =
+  let update field form v = form & field . value .~ v
+   in Forms
+        { _itemForm =
+            let update' field form v = form & itemForm . field . value .~ v
+             in ItemStockForm
+                  { _codigoIField = FormField "Código" "" $ update' codigoIField,
+                    _descripcionField = FormField "Descripción" "" $ update' descripcionField,
+                    _marcaField = FormField "Marca" "" $ update' marcaField,
+                    _rubroField = FormField "Rubro" "" $ update' rubroField,
+                    _codigoProveedorField = FormField "Código del Proveedor" "" $ update' codigoProveedorField,
+                    _unidadMedidadField = FormField "Unidad de Medida" "" $ update' unidadMedidadField,
+                    _cantidadExistenteField = FormField "Cantidad Existente" "" $ update' cantidadExistenteField,
+                    _cantidadMinimaField = FormField "Cantidad Mínima" "" $ update' cantidadMinimaField,
+                    _cantidadMaximaField = FormField "Cantidad Máxima" "" $ update' cantidadMaximaField,
+                    _precioCompraField = FormField "Precio de Compra" "" $ update' precioCompraField,
+                    _porcentajeGananciaField = FormField "Porcentaje de Ganancia" "" $ update' porcentajeGananciaField
+                  },
+          _proveedorForm =
+            let update' field form v = form & proveedorForm . field . value .~ v
+             in ProveedorForm
+                  { _codigoPField = FormField "Código" "" $ update' codigoPField,
+                    _nombreField = FormField "Nombre" "" $ update' nombreField,
+                    _direccionField = FormField "Dirección" "" $ update' direccionField,
+                    _telefonoField = FormField "Teléfono" "" $ update' telefonoField
+                  },
+          _eliminarItemID = FormField "ID Item" "" $ update eliminarItemID,
+          _eliminarProveedorID = FormField "ID Proveedor" "" $ update eliminarProveedorID
+        }

@@ -3,42 +3,20 @@
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TemplateHaskell #-}
 
-module Main where
+module Main (main) where
 
-{-
-  Averiguar sobre:
-  - Estilos (css) para GTK
-  - Iconos
-  - Box vs VBox vs ListRow
-  TODO:
-    - Mover layouts a otro módulo
--}
-
-import Control.Monad (void)
-import qualified Data.Bifunctor as Bifunctor
+import Control.Monad ((>=>), void)
 import qualified Data.Text as Text
-import Data.Text (Text)
 import qualified Data.Vector as Vector
-import Data.Vector (Vector)
 import Forms
-  ( FormToObject (..),
-    Forms (..),
-    ItemForm (..),
-    ProveedorForm (..),
-    bajaItemID,
-    bajaProveedorID,
-    emptyForms,
-    simpleInputError,
-  )
 import GI.Gtk
   ( Box (..),
     Button (..),
     Entry (..),
     Label (..),
     Orientation (..),
-    ScrolledWindow (..),
     ShadowType (..),
     Viewport (..),
     Window (..),
@@ -46,49 +24,60 @@ import GI.Gtk
 import GI.Gtk.Declarative
 import GI.Gtk.Declarative.App.Simple
 import GI.Gtk.Objects.Entry (entryGetText)
+import Layouts
+  ( defaultBoxChild,
+    displayInfoLayout,
+    expandBoxChild,
+    simpleListView,
+    subPageLayout,
+  )
+import Lens.Micro.Platform
 import ModelStock
-import QueueData (filterQ, insertQ, qtoL)
+import QueueData (QData (..), filterQ, insertQ, qtoL)
 
 data Event
   = ToScreen Screen
   | UpdateForms Forms
   | CRUDItem (CRUD ItemStock Int)
   | CRUDProveedor (CRUD Proveedor Int)
+  | StoreToFile
+  | ReadFromFile
+  | UpdateTables (TablaStock, TablaProveedor)
   | Close
 
-data CRUD a k = Alta (Maybe a) | Baja (Maybe k)
+data CRUD a k = Create (Maybe a) | Delete (Maybe k)
 
 data Screen
   = MainMenu
-  | NuevoProveedor
-  | NuevoItem
-  | EliminarProveedor
-  | EliminarItem
-  | MostrarProveedores
-  | MostarItems
-  | MostarItemsAReponer
-  | CargarDatos
-  | GuardarDatos
+  | CreateProveedor
+  | CreateItemStock
+  | DeleteProveedor
+  | DeleteItem
+  | ListProveedores
+  | ListItemStock
+  | ListItemStockReponer
   deriving (Show)
 
 data State = State
-  { currentScreen :: Screen,
-    tablaStock :: TablaStock,
-    tablaProveedor :: TablaProveedor,
-    forms :: Forms
+  { _currentScreen :: Screen,
+    _tablaStock :: TablaStock,
+    _tablaProveedor :: TablaProveedor,
+    _forms :: Forms
   }
+
+$(makeLenses ''State)
 
 initialState' :: State
 initialState' =
   State
-    { currentScreen = MainMenu,
-      tablaStock = tabla1S,
-      tablaProveedor = tabla1P,
-      forms = emptyForms
+    { _currentScreen = MainMenu,
+      _tablaStock = tabla1S,
+      _tablaProveedor = tabla1P,
+      _forms = appForms
     }
 
 view' :: State -> AppView Window Event
-view' State {..} =
+view' s =
   bin
     Window
     [ #title := "Sistema Administración de Stock",
@@ -101,46 +90,51 @@ view' State {..} =
       [ #margin := 10,
         #shadowType := ShadowTypeNone
       ]
-    $ case currentScreen of
+    $ case s ^. currentScreen of
       MainMenu -> mainMenuLayout
-      NuevoItem -> nuevoItemLayout forms
-      NuevoProveedor -> nuevoProveedorLayout forms
-      EliminarItem -> eliminarItemLayout forms
-      EliminarProveedor -> eliminarProveedorLayout forms
-      MostarItems -> listarItemsLayout tablaStock
-      MostrarProveedores -> listarProveedoresLayout tablaProveedor
-      MostarItemsAReponer -> listarItemsReponerLayour tablaStock
-      _ -> mainMenuLayout
+      CreateItemStock -> createItemStockLayout (s ^. forms)
+      CreateProveedor -> createProveedorLayout (s ^. forms)
+      DeleteItem -> deleteItemStockLayout (s ^. forms)
+      DeleteProveedor -> deleteProveedorLayout (s ^. forms)
+      ListItemStock -> listItemStockLayout (s ^. tablaStock)
+      ListProveedores -> listProveedoresLayout (s ^. tablaProveedor)
+      ListItemStockReponer -> listItemStockReponerLayout (s ^. tablaStock)
 
 update' :: State -> Event -> Transition State Event
--- Actualizacion de Formularioss
-update' s (UpdateForms forms') = Transition s {forms = forms'} (return Nothing)
+-- Actualizacion de Formularios
+update' s (UpdateForms f) = Transition (s & forms .~ f) (return Nothing)
 -- CRUD ItemStock
 update' s (CRUDItem action) = case action of
-  Alta (Just item) ->
-    let tablaStock' = insertQ item $ tablaStock s
-     in Transition (s {tablaStock = tablaStock'}) (return $ Just $ ToScreen MainMenu)
-  Alta Nothing -> Transition s simpleInputError
-  Baja (Just codigo) ->
-    let tablaStock' = filterQ ((/=) codigo . itemCodigo) $ tablaStock s
-     in Transition (s {tablaStock = tablaStock'}) (return $ Just $ ToScreen MainMenu)
-  Baja Nothing -> Transition s simpleInputError
+  Create (Just item) ->
+    let tablaStock' = insertQ item $ s ^. tablaStock
+     in Transition (s & tablaStock .~ tablaStock') (return $ Just $ ToScreen MainMenu)
+  Delete (Just codigo) ->
+    let tablaStock' = filterQ ((/=) codigo . itemCodigo) $ s ^. tablaStock
+     in Transition (s & tablaStock .~ tablaStock') (return $ Just $ ToScreen MainMenu)
+  _ -> Transition s (return Nothing)
 -- CRUD Proveedor
 update' s (CRUDProveedor action) = case action of
-  Alta (Just proveedor) ->
-    let tablaProveedor' = insertQ proveedor $ tablaProveedor s
-     in Transition (s {tablaProveedor = tablaProveedor'}) (return $ Just $ ToScreen MainMenu)
-  Alta Nothing -> Transition s simpleInputError
-  Baja (Just codigo) ->
-    let tablaProveedor' = filterQ ((/=) codigo . proveedorCodigo) $ tablaProveedor s
-     in Transition (s {tablaProveedor = tablaProveedor'}) (return $ Just $ ToScreen MainMenu)
-  Baja Nothing -> Transition s simpleInputError
+  Create (Just proveedor) ->
+    let tablaProveedor' = insertQ proveedor $ s ^. tablaProveedor
+     in Transition (s & tablaProveedor .~ tablaProveedor') (return $ Just $ ToScreen MainMenu)
+  Delete (Just codigo) ->
+    let tablaProveedor' = filterQ ((/=) codigo . proveedorCodigo) $ s ^. tablaProveedor
+     in Transition (s & tablaProveedor .~ tablaProveedor') (return $ Just $ ToScreen MainMenu)
+  _ -> Transition s (return Nothing)
 -- Navegacion entre pantallas
-update' s (ToScreen screen) = Transition (s {currentScreen = screen}) logScreen
-  where
-    logScreen = do
-      putStrLn $ "Moviendose a la pantalla '" <> show screen <> "'"
-      return Nothing
+update' s (ToScreen screen) = Transition (s & currentScreen .~ screen) (return Nothing)
+-- Guardado y Carga de datos
+update' s StoreToFile = Transition s $ do
+  writeFile "items.txt" (show . qtoL $ s ^. tablaStock)
+  writeFile "proveedores.txt" (show . qtoL $ s ^. tablaProveedor)
+  putStrLn "Datos guardados con éxito"
+  return Nothing
+update' s ReadFromFile = Transition s $ do
+  stock' <- Q . read <$> readFile "items.txt"
+  proveedores' <- Q . read <$> readFile "proveedores.txt"
+  putStrLn "Datos cargados con éxito"
+  return . Just $ UpdateTables (stock', proveedores')
+update' s (UpdateTables (ts, tp)) = Transition ((s & tablaStock .~ ts) & tablaProveedor .~ tp) (return Nothing)
 -- Fin de programa
 update' _ Close = Exit
 
@@ -161,129 +155,109 @@ mainMenuLayout =
   container Box [#spacing := 20, #orientation := OrientationVertical] $
     [defaultBoxChild $ widget Label [#label := "Menu Principal"]]
       <> [ expandBoxChild . simpleListView $
-             (\(label, toScreen) -> widget Button [#label := label, on #clicked toScreen]) <$> menuLinks
+             (\(label', action) -> widget Button [#label := label', on #clicked action]) <$> menuButtons
          ]
       <> [defaultBoxChild $ widget Button [#label := "Salir", on #clicked Close]]
   where
-    menuLinks =
-      Bifunctor.second ToScreen
-        <$> [ ("Insertar Item", NuevoItem),
-              ("Insertar Proveedor", NuevoProveedor),
-              ("Eliminar Item", EliminarItem),
-              ("Eliminar Proveedor", EliminarProveedor),
-              ("Listar Items", MostarItems),
-              ("Listar Proveedores", MostrarProveedores),
-              ("Productos a Reponer", MostarItemsAReponer),
-              ("Cargar Datos", CargarDatos),
-              ("Guardar Datos", GuardarDatos)
-            ]
-
-nuevoItemLayout :: Forms -> Widget Event
-nuevoItemLayout forms = subPageLayout "Nuevo Item" $ formEntryLayout entries submitItem
-  where
-    submitItem = CRUDItem . Alta $ formToObject (itemForm forms)
-    updateItemForm update value = forms {itemForm = update (itemForm forms) value}
-    entries =
-      [ ("Código", updateItemForm $ \f v -> f {itemFormCodigo = v}),
-        ("Descripción", updateItemForm $ \f v -> f {itemFormDescripcion = v}),
-        ("Marca", updateItemForm $ \f v -> f {itemFormMarca = v}),
-        ("Rubro", updateItemForm $ \f v -> f {itemFormRubro = v}),
-        ("Código del Proveedor", updateItemForm $ \f v -> f {itemFormCodigoProveedor = v}),
-        ("Unidad de Medida", updateItemForm $ \f v -> f {itemFormUnidadMedidad = v}),
-        ("Cantidad Existente", updateItemForm $ \f v -> f {itemFormCantidadExistente = v}),
-        ("Cantidad Mínima", updateItemForm $ \f v -> f {itemFormCantidadMinima = v}),
-        ("Cantidad Máxima", updateItemForm $ \f v -> f {itemFormCantidadMaxima = v}),
-        ("Precio de Compra", updateItemForm $ \f v -> f {itemFormPrecioCompra = v}),
-        ("Porcentaje de Ganancia", updateItemForm $ \f v -> f {itemFormPorcentajeGanancia = v})
+    menuButtons =
+      [ ("Insertar Item", ToScreen CreateItemStock),
+        ("Insertar Proveedor", ToScreen CreateProveedor),
+        ("Eliminar Item", ToScreen DeleteItem),
+        ("Eliminar Proveedor", ToScreen DeleteProveedor),
+        ("Listar Items", ToScreen ListItemStock),
+        ("Listar Proveedores", ToScreen ListProveedores),
+        ("Productos a Reponer", ToScreen ListItemStockReponer),
+        ("Cargar Datos", ReadFromFile),
+        ("Guardar Datos", StoreToFile)
       ]
 
-nuevoProveedorLayout :: Forms -> Widget Event
-nuevoProveedorLayout forms = subPageLayout "Nuevo Proveedor" $ formEntryLayout entries submitItem
-  where
-    submitItem = CRUDProveedor . Alta $ formToObject (proveedorForm forms)
-    updateProveedorForm update value = forms {proveedorForm = update (proveedorForm forms) value}
-    entries =
-      [ ("Código", updateProveedorForm $ \f v -> f {proveedorFormCodigo = v}),
-        ("Nombre", updateProveedorForm $ \f v -> f {proveedorFormNombre = v}),
-        ("Dirección", updateProveedorForm $ \f v -> f {proveedorFormDireccion = v}),
-        ("Número de Teléfono", updateProveedorForm $ \f v -> f {proveedorFormTelefono = v})
-      ]
-
-listarItemsLayout :: TablaStock -> Widget Event
-listarItemsLayout stock =
-  subPageLayout "Items" $ displayInfoLayout
-    $ Vector.fromList
-    $ Text.pack . itemDescripcion <$> qtoL stock
-
-listarProveedoresLayout :: TablaProveedor -> Widget Event
-listarProveedoresLayout proveedores =
-  subPageLayout "Proveedores" $ displayInfoLayout
-    $ Vector.fromList
-    $ Text.pack . proveedorNombre <$> qtoL proveedores
-
-listarItemsReponerLayour :: TablaStock -> Widget Event
-listarItemsReponerLayour stock =
-  subPageLayout "Items a Reponer" $ displayInfoLayout
-    $ Vector.fromList
-    $ Text.pack . itemDescripcion <$> fReponer stock
-
-eliminarItemLayout :: Forms -> Widget Event
-eliminarItemLayout forms =
-  deleteLayout "Eliminar Item" (CRUDItem . Baja $ bajaItemID forms) (\i -> forms {formBajaItemID = i})
-
-eliminarProveedorLayout :: Forms -> Widget Event
-eliminarProveedorLayout forms =
-  deleteLayout "Eliminar Proveedor" (CRUDItem . Baja $ bajaProveedorID forms) (\i -> forms {formBajaProveedorID = i})
-
--- Generic Layouts
-subPageLayout :: Text -> Widget Event -> Widget Event
-subPageLayout title body =
-  container Box [#spacing := 20, #orientation := OrientationVertical] $
-    [defaultBoxChild $ widget Label [#label := title]]
-      <> [expandBoxChild body]
-      <> [defaultBoxChild $ widget Button [#label := "Atrás", on #clicked $ ToScreen MainMenu]]
-
-formEntryLayout :: Vector (Text, Text -> Forms) -> Event -> Widget Event
-formEntryLayout entries submit =
-  container Box [#spacing := 20, #orientation := OrientationVertical] $
-    defaultBoxChild
+createItemStockLayout :: Forms -> Widget Event
+createItemStockLayout form =
+  subPageLayout "Nuevo Item" (ToScreen MainMenu)
+    $ container Box [#spacing := 20, #orientation := OrientationVertical]
+    $ defaultBoxChild
       <$> [simpleListView $ entryBuilder <$> entries]
       <> [widget Button [#label := "Registrar", on #clicked submit]]
   where
-    entryBuilder (label, updater) =
+    submit = CRUDItem . Create $ formToValue (form ^. itemForm)
+    entryBuilder (label', _, setter') =
       widget
         Entry
-        [ #placeholderText := label,
-          onM #changed $ updateFormsFromEntry updater
+        [ #placeholderText := label',
+          onM #changed $ entryGetText >=> return . UpdateForms . setter' form
         ]
+    entries =
+      [ formFieldToTuple $ form ^. itemForm . codigoIField,
+        formFieldToTuple $ form ^. itemForm . descripcionField,
+        formFieldToTuple $ form ^. itemForm . marcaField,
+        formFieldToTuple $ form ^. itemForm . rubroField,
+        formFieldToTuple $ form ^. itemForm . codigoProveedorField,
+        formFieldToTuple $ form ^. itemForm . unidadMedidadField,
+        formFieldToTuple $ form ^. itemForm . cantidadExistenteField,
+        formFieldToTuple $ form ^. itemForm . cantidadMinimaField,
+        formFieldToTuple $ form ^. itemForm . cantidadMaximaField,
+        formFieldToTuple $ form ^. itemForm . precioCompraField,
+        formFieldToTuple $ form ^. itemForm . porcentajeGananciaField
+      ]
 
-displayInfoLayout :: Vector Text -> Widget Event
-displayInfoLayout info =
-  bin ScrolledWindow []
-    $ bin Viewport []
-    $ simpleListView
-    $ (\i -> widget Label [#label := i, #xalign := 0]) <$> info
+createProveedorLayout :: Forms -> Widget Event
+createProveedorLayout form =
+  subPageLayout "Nuevo Proveedor" (ToScreen MainMenu)
+    $ container Box [#spacing := 20, #orientation := OrientationVertical]
+    $ defaultBoxChild
+      <$> [simpleListView $ entryBuilder <$> entries]
+      <> [widget Button [#label := "Registrar", on #clicked submit]]
+  where
+    submit = CRUDProveedor . Create $ formToValue (form ^. proveedorForm)
+    entryBuilder (label', _, setter') =
+      widget
+        Entry
+        [ #placeholderText := label',
+          on #activate submit,
+          onM #changed $ entryGetText >=> return . UpdateForms . setter' form
+        ]
+    entries =
+      [ formFieldToTuple $ form ^. proveedorForm . codigoPField,
+        formFieldToTuple $ form ^. proveedorForm . nombreField,
+        formFieldToTuple $ form ^. proveedorForm . direccionField,
+        formFieldToTuple $ form ^. proveedorForm . telefonoField
+      ]
 
-deleteLayout :: Text -> Event -> (Text -> Forms) -> Widget Event
-deleteLayout title submit updater =
-  subPageLayout title
-    $ simpleListView
-    $ [widget Entry [#placeholderText := "ID", onM #changed $ updateFormsFromEntry updater]]
-      <> [widget Button [#label := "Eliminar", onM #clicked $ const . return $ submit]]
+listItemStockLayout :: TablaStock -> Widget Event
+listItemStockLayout stock =
+  subPageLayout "Items" (ToScreen MainMenu)
+    $ displayInfoLayout
+    $ Vector.fromList
+    $ Text.pack . itemDescripcion <$> qtoL stock
 
--- Layout Utils
-defaultBoxChild :: Widget e -> BoxChild e
-defaultBoxChild = BoxChild defaultBoxChildProperties
+listProveedoresLayout :: TablaProveedor -> Widget Event
+listProveedoresLayout proveedores =
+  subPageLayout "Proveedores" (ToScreen MainMenu)
+    $ displayInfoLayout
+    $ Vector.fromList
+    $ Text.pack . proveedorNombre <$> qtoL proveedores
 
-expandBoxChild :: Widget e -> BoxChild e
-expandBoxChild = BoxChild BoxChildProperties {expand = True, fill = True, padding = 0}
+listItemStockReponerLayout :: TablaStock -> Widget Event
+listItemStockReponerLayout stock =
+  subPageLayout "Items a Reponer" (ToScreen MainMenu)
+    $ displayInfoLayout
+    $ Vector.fromList
+    $ Text.pack . itemDescripcion <$> fReponer stock
 
-simpleListView :: Vector (Widget e) -> Widget e
-simpleListView children =
-  container Box [#spacing := 10, #orientation := OrientationVertical] $ defaultBoxChild <$> children
+deleteItemStockLayout :: Forms -> Widget Event
+deleteItemStockLayout form =
+  let changed = entryGetText >=> \text -> return . UpdateForms $ set (eliminarItemID . value) text form
+      submit _ = return $ CRUDItem . Delete $ fieldToValue $ form ^. eliminarItemID
+   in subPageLayout "Eliminar Item" (ToScreen MainMenu)
+        $ simpleListView
+        $ [widget Entry [#placeholderText := "ID Item", onM #changed changed]]
+          <> [widget Button [#label := "Eliminar", onM #clicked submit]]
 
--- Forms Utils
-updateFormsFromEntry :: (Text -> Forms) -> Entry -> IO Event
-updateFormsFromEntry updater entry = do
-  entryText <- entryGetText entry
-  return . UpdateForms $ updater entryText
+deleteProveedorLayout :: Forms -> Widget Event
+deleteProveedorLayout form =
+  let changed = entryGetText >=> \text -> return . UpdateForms $ set (eliminarProveedorID . value) text form
+      submit _ = return $ CRUDProveedor . Delete $ fieldToValue $ form ^. eliminarProveedorID
+   in subPageLayout "Eliminar Proveedor" (ToScreen MainMenu)
+        $ simpleListView
+        $ [widget Entry [#placeholderText := "ID Proveedor", onM #changed changed]]
+          <> [widget Button [#label := "Eliminar", onM #clicked submit]]
